@@ -24,38 +24,51 @@
 #undef DEBUG
 #define LOG
 
-#define BUFFER_SIZE		8192
-#define DEFAULT_SERVER_PORT	80
-#define LISTEN_BACKLOG		21	/* Maximum number of pending users. */
-#define LOGBUFFER		120
-#define NOBODY_UID		99	/* Nobody on my system, check yours! */
+#define DEFAULT_SERVER_PORT 80
+#define INPUT_BUFFER 8180
+#define LISTEN_BACKLOG 21	/* Maximum number of pending users. */
+#define NOBODY_UID 99		/* Nobody on my system, check yours! */
+#define PARSE_BUFFER (INPUT_BUFFER + 12)
+#define TMP_LOG 120
+#define TMP_SIZE 120
 
 static int connected_socket;
 static int server_socket;
 
-void http_error(int error_code);
+void http_error(const int error_code);
 void http_server(void);
 int open_server_port(unsigned int port);
-int parse_port(int argc, char *argv[]);
-void signal_handler(int sig);
+int parse_port(const int argc, char *argv[]);
+void send_file(const char *name);
+void signal_handler(const int sig);
 void write_socket(const char *buffer);
 
 int
 main(int argc, char *argv[])
 {
-	server_socket = open_server_port(parse_port(argc, argv));
+	int port;
+
+	port = parse_port(argc, argv);
+	if (port == -1)
+		return EXIT_FAILURE;
+
+	server_socket = open_server_port(port);
+	if (server_socket == -1)
+		return EXIT_FAILURE;
 
 	setuid(NOBODY_UID);
 
 	signal(SIGTERM, signal_handler);
 	signal(SIGINT, signal_handler);
 
+	fprintf(stderr, "%s: server started.\n", argv[0]);
+
 	while (server_socket != -1) {
 		struct sockaddr_in client_addr;
 		unsigned int sin_size = sizeof (struct sockaddr_in);
 #ifdef LOG
 		struct hostent *host;
-		char s[LOGBUFFER];
+		char s[TMP_LOG];
 		time_t tp;
 #endif				/* LOG */
 
@@ -63,7 +76,8 @@ main(int argc, char *argv[])
 		    accept(server_socket, (struct sockaddr *) &client_addr,
 			   &sin_size);
 		if (connected_socket == -1) {
-			perror("accept");
+			if (server_socket != -1)
+				perror("accept");
 			continue;
 		}
 #ifdef LOG
@@ -75,7 +89,7 @@ main(int argc, char *argv[])
 		} else {
 			printf("%s", inet_ntoa(client_addr.sin_addr));
 		}
-		strftime(s, (size_t) LOGBUFFER,
+		strftime(s, (size_t) TMP_LOG,
 			 " - - [%d/%b/%Y:%X +0000] \"GET /", gmtime(&tp));
 		printf("%s", s);
 #endif				/* LOG */
@@ -88,11 +102,14 @@ main(int argc, char *argv[])
 		if (close(connected_socket) == -1)
 			perror("close");
 	}
+
+	fprintf(stderr, "%s: server stopped.\n", argv[0]);
+
 	return EXIT_SUCCESS;
 }
 
 void
-http_error(int error_code)
+http_error(const int error_code)
 {
 	const char error_header[] =
 	    "Server: veppiserveri\nContent-type: text/plain\n"
@@ -135,13 +152,11 @@ http_error(int error_code)
 void
 http_server(void)
 {
-	char parsed_name[BUFFER_SIZE + 12] = { 0 };
-	char input[BUFFER_SIZE] = { 0 };
-	char *tmp_memory = NULL;
-	FILE *fp;
-	int bytes, first_char, file_size, i;
+	char file[PARSE_BUFFER] = { 0 };
+	char input[INPUT_BUFFER] = { 0 };
+	int bytes, first_char, i;
 
-	bytes = read(connected_socket, input, BUFFER_SIZE);
+	bytes = read(connected_socket, input, INPUT_BUFFER);
 	if (bytes == -1 || bytes == 0) {
 		perror("read");
 		return;
@@ -156,17 +171,17 @@ http_server(void)
 		while (input[first_char] == '/' || input[first_char] == '.'
 		       || input[first_char] == ':') {
 			first_char++;
-			if (first_char == BUFFER_SIZE)
+			if (first_char == INPUT_BUFFER)
 				return;
 		}
-		for (i = first_char; i < BUFFER_SIZE; i++) {
+		for (i = first_char; i < INPUT_BUFFER; i++) {
 			if (input[i] == '.' && input[i + 1] == '.' &&
 			    ((input[i + 2] == '/' || input[i + 2] == ' ')
 			     || (input[i] == ':')))
 				continue;
 			if (input[i] != ' ' && input[i] != '\n'
 			    && input[i] != '\r')
-				parsed_name[i - first_char] = input[i];
+				file[i - first_char] = input[i];
 			else
 				break;
 		}
@@ -178,81 +193,10 @@ http_server(void)
 		return;
 	}
 
-	if (((chdir(parsed_name) == 0) || (strlen(parsed_name) == 0)))
-		strcpy(parsed_name, "index.html");
+	if (((chdir(file) == 0) || (strlen(file) == 0)))
+		strcpy(file, "index.html");
 
-#ifdef LOG
-	printf("%s HTTP/1.0\" ", parsed_name);
-#endif				/* LOG */
-
-	fp = fopen(parsed_name, "r");
-	if (fp == NULL) {
-		http_error(404);
-		return;
-	}
-
-	if (fseek(fp, 0, SEEK_END) == -1)
-		perror("fseek");
-
-	file_size = ftell(fp);
-	if (file_size == -1)
-		perror("ftell");
-
-	rewind(fp);
-
-	if (file_size > BUFFER_SIZE) {	/* malloc is expensive ;) */
-		tmp_memory = malloc(file_size);
-		if (tmp_memory == NULL) {
-			perror("malloc");
-			if (fclose(fp) == EOF)
-				perror("fclose");
-			fp = NULL;
-			http_error(500);
-			return;
-		}
-	} else {
-		tmp_memory = parsed_name;
-	}
-
-	write_socket("HTTP/1.0 200 OK\nServer: veppiserveri\nContent-type: ");
-
-	if (strstr(parsed_name, ".html") != NULL)
-		write_socket("text/html\n");
-
-	else if (strstr(parsed_name, ".gif") != NULL)
-		write_socket("image/gif\n");
-
-	else if (strstr(parsed_name, ".jp") != NULL)
-		write_socket("image/jpeg\n");
-
-	else if (strstr(parsed_name, ".png") != NULL)
-		write_socket("image/png\n");
-
-	else
-		write_socket("text/plain\n");
-
-	sprintf(input, "Content-length: %d\nConnection: close\n\n", file_size);
-	write_socket(input);
-
-	fread(tmp_memory, file_size, 1, fp);
-	if (ferror(fp) != 0) {
-		perror("fread");
-		clearerr(fp);
-	}
-
-	bytes = write(connected_socket, tmp_memory, file_size);
-	if (bytes == -1)
-		perror("write");
-
-	if (file_size > BUFFER_SIZE)
-		free(tmp_memory);
-
-	if (fclose(fp) == EOF)
-		perror("fclose");
-
-#ifdef LOG
-	printf("200 %d \"-\" \"-\"\n", file_size);
-#endif				/* LOG */
+	send_file(file);
 }
 
 int
@@ -261,7 +205,7 @@ open_server_port(unsigned int port)
 	static struct sockaddr_in sin;
 	int one = 1, sd;
 
-	if (port < 1 || port > 65535)
+	if (port > 65535)
 		return -1;
 
 	sin.sin_family = AF_INET;
@@ -293,10 +237,8 @@ open_server_port(unsigned int port)
 }
 
 int
-parse_port(int argc, char *argv[])
+parse_port(const int argc, char *argv[])
 {
-	int port = -1;
-
 	if (argc > 1) {
 		if (argv[1][0] != '/') {
 			fprintf(stderr, "Given path is not absolute.\n");
@@ -309,26 +251,99 @@ parse_port(int argc, char *argv[])
 		}
 
 		if (argc == 2)
-			port = DEFAULT_SERVER_PORT;
+			return DEFAULT_SERVER_PORT;
 
-		if (argc == 3)
-			port = atoi(argv[2]);
+		if (argc == 3) {
+			unsigned int port = atoi(argv[2]);
 
-		if (port < 1 || port > 65535) {
-			fprintf(stderr, "Port is between 1 and 65535.\n");
-			return -1;
+			if (port > 65535) {
+				fprintf(stderr, "Max. port is 65535.\n");
+				return -1;
+			}
+			return port;
 		}
-	} else {
-		fprintf(stderr,
-			"Usage: %s absolute-path-to-www-root [port]\n",
-			argv[0]);
-	}
 
-	return port;
+	} else
+		fprintf(stderr, "Usage: %s absolute-path-to-www-root [port]\n",
+			argv[0]);
+	return -1;
 }
 
 void
-signal_handler(int sig)
+send_file(const char *name)
+{
+	char tmp[TMP_SIZE] = { 0 };
+	FILE *fp = NULL;
+	char *buffer = NULL;
+	ssize_t size;
+
+#ifdef LOG
+	printf("%s HTTP/1.0\" ", name);
+#endif				/* LOG */
+
+	fp = fopen(name, "r");
+	if (fp == NULL) {
+		http_error(404);
+		return;
+	}
+
+	if (fseek(fp, 0, SEEK_END) == -1)
+		perror("fseek");
+
+	size = ftell(fp);
+	if (size == -1)
+		perror("ftell");
+
+	rewind(fp);
+
+	buffer = malloc(size);	/* Served files have to fit into memory. */
+	if (buffer == NULL) {
+		perror("malloc");
+		if (fclose(fp) == EOF)
+			perror("fclose");
+		fp = NULL;
+		http_error(500);
+		return;
+	}
+
+	write_socket("HTTP/1.0 200 OK\nServer: veppiserveri\nContent-type: ");
+
+	if (strstr(name, ".html"))
+		write_socket("text/html\n");
+	else if (strstr(name, ".jpeg"))
+		write_socket("image/jpeg\n");
+	else if (strstr(name, ".png"))
+		write_socket("image/png\n");
+	else
+		write_socket("text/plain\n");
+
+	if (snprintf(tmp, TMP_SIZE,
+		     "Content-length: %d\nConnection: close\n\n", size) > -1)
+		write_socket(tmp);
+	else
+		perror("snprintf");
+
+	fread(buffer, size, 1, fp);
+	if (ferror(fp) != 0) {
+		perror("fread");
+		clearerr(fp);
+	}
+
+	if (write(connected_socket, buffer, size) != size)
+		perror("write");
+
+	free(buffer);
+
+	if (fclose(fp) == EOF)
+		perror("fclose");
+
+#ifdef LOG
+	printf("200 %d \"-\" \"-\"\n", size);
+#endif				/* LOG */
+}
+
+void
+signal_handler(const int sig)
 {
 	if (close(server_socket) == 0)
 		server_socket = -1;
@@ -339,6 +354,8 @@ signal_handler(int sig)
 void
 write_socket(const char *buffer)
 {
-	if (write(connected_socket, buffer, strlen(buffer)) == -1)
+	size_t length = strlen(buffer);
+
+	if (write(connected_socket, buffer, length) != length)
 		perror("write");
 }
