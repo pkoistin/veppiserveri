@@ -330,10 +330,10 @@ parse_port(int argc, char *argv[])
 void
 signal_handler(int sig)
 {
-	if (close(server_socket) == -1)
-		perror("close");
-	else
+	if (close(server_socket) == 0)
 		server_socket = -1;
+	else
+		perror("close");
 }
 
 void
