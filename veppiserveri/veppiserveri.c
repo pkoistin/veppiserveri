@@ -13,6 +13,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 #include <netdb.h>
@@ -23,63 +24,45 @@
 #undef DEBUG
 #define LOG
 
-#define BUFFER_SIZE 8192
-#define LISTEN_BACKLOG	21
-#define LOGBUFFER 9000
+#define BUFFER_SIZE		8192
+#define DEFAULT_SERVER_PORT	80
+#define LISTEN_BACKLOG		21	/* Maximum number of pending users. */
+#define LOGBUFFER		120
+#define NOBODY_UID		99	/* Nobody on my system, check yours! */
 
+static int connected_socket;
 static int server_socket;
-static int the_socket;
 
-void signal_hander(int sig);
-int open_server_port(unsigned short port);
-void http_server(void);
 void http_error(int error_code);
+void http_server(void);
+int open_server_port(unsigned int port);
+int parse_port(int argc, char *argv[]);
+void signal_handler(int sig);
 void write_socket(const char *buffer);
 
 int
 main(int argc, char *argv[])
 {
+	server_socket = open_server_port(parse_port(argc, argv));
+
+	setuid(NOBODY_UID);
+
+	signal(SIGTERM, signal_handler);
+	signal(SIGINT, signal_handler);
+
+	while (server_socket != -1) {
+		struct sockaddr_in client_addr;
+		unsigned int sin_size = sizeof (struct sockaddr_in);
 #ifdef LOG
-	struct hostent *host;
-#endif				/* LOG */
-	struct sockaddr_in client_addr;
-	unsigned int sin_size = sizeof (struct sockaddr_in);
-	int port = 80;		/* Default HTTP service port */
-
-	if (argc > 1) {
-		chdir("/");
-		if (chdir(argv[1])) {
-			fprintf(stderr, "invalid www-root-directory, "
-				"must be absolute path.\n");
-			exit(1);
-		}
-		if (argc == 3) {
-			port = atoi(argv[2]);
-			if (port == 0) {
-				fprintf(stderr, "invalid port number.\n");
-				exit(1);
-			}
-		}
-	} else {
-		fprintf(stderr, "usage: %s www-root-directory [port]\n",
-			argv[0]);
-		exit(1);
-	}
-
-	signal(SIGTERM, signal_hander);
-	signal(SIGINT, signal_hander);
-
-	the_socket = open_server_port(port);
-
-	setuid(99);		// Nobody on my Red Hat Rawhide Linux system.
-
-	while (the_socket != 0) {
-#ifdef LOG
+		struct hostent *host;
 		char s[LOGBUFFER];
 		time_t tp;
 #endif				/* LOG */
-		if ((server_socket = accept(the_socket, (struct sockaddr *)
-					    &client_addr, &sin_size)) == -1) {
+
+		connected_socket =
+		    accept(server_socket, (struct sockaddr *) &client_addr,
+			   &sin_size);
+		if (connected_socket == -1) {
 			perror("accept");
 			continue;
 		}
@@ -97,59 +80,56 @@ main(int argc, char *argv[])
 		printf("%s", s);
 #endif				/* LOG */
 
-		chdir(argv[1]);
-		http_server();
-		close(server_socket);
-	}
+		if (chdir(argv[1]) == 0)
+			http_server();
+		else
+			perror("chdir");
 
-	fprintf(stderr, "server closed.\n");
-	return 0;
+		if (close(connected_socket) == -1)
+			perror("close");
+	}
+	return EXIT_SUCCESS;
 }
 
 void
-signal_hander(int sig)
+http_error(int error_code)
 {
-	fprintf(stderr, "shutting down server...\n");
-	close(the_socket);
-	the_socket = 0;
-}
+	const char error_header[] =
+	    "Server: veppiserveri\nContent-type: text/plain\n"
+	    "Connection: close\n\n\n";
+	const char not_found[] = "HTTP/1.0 404 Not found\n";
+	const char internal_server_error[] =
+	    "HTTP/1.0 500 Internal Server Error\n";
+	const char not_implemented[] = "HTTP/1.0 501 Not implemented\n";
 
-int
-open_server_port(unsigned short port)
-{
-	static struct sockaddr_in sin;
-	int err, one, tmp_socket;
+	switch (error_code) {
+	case 404:
+		write_socket(not_found);
+		write_socket(error_header);
+		write_socket(not_found);
+		break;
 
-	sin.sin_family = AF_INET;
-	sin.sin_port = htons(port);
+	case 500:
+		write_socket(internal_server_error);
+		write_socket(error_header);
+		write_socket(internal_server_error);
+		break;
 
-	tmp_socket = socket(AF_INET, SOCK_STREAM, 0);
-	if (tmp_socket < 0) {
-		perror("socket");
-		exit(1);
+	case 501:
+		write_socket(not_implemented);
+		write_socket(error_header);
+		write_socket(not_implemented);
+		break;
+
+	default:
+		perror("unknown error");
+		fprintf(stderr, "unknown error_code: %d\n", error_code);
+		break;
 	}
 
-	one = 1;
-	if (setsockopt(tmp_socket, SOL_SOCKET, SO_REUSEADDR, (char *) &one,
-		       sizeof (int)) == -1) {
-		fprintf(stderr, "Error in setsockopt REUSEADDR");
-	}
-
-	err = bind(tmp_socket, (struct sockaddr *) &sin, sizeof (sin));
-	if (err) {
-		close(tmp_socket);
-		perror("bind");
-		exit(1);
-	}
-
-	err = listen(tmp_socket, LISTEN_BACKLOG);
-	if (err) {
-		close(tmp_socket);
-		perror("listen");
-		exit(1);
-	}
-
-	return tmp_socket;
+#ifdef LOG
+	printf("%d 1 \"-\" \"-\"\n", error_code);
+#endif				/* LOG */
 }
 
 void
@@ -157,20 +137,20 @@ http_server(void)
 {
 	char parsed_name[BUFFER_SIZE + 12] = { 0 };
 	char input[BUFFER_SIZE] = { 0 };
-	char *temp_memory = NULL;
+	char *tmp_memory = NULL;
 	FILE *fp;
-	int data_got, first_char, file_size, i;
+	int bytes, first_char, file_size, i;
 
-	data_got = read(server_socket, input, BUFFER_SIZE);
-	if (data_got <= 0) {
-		fprintf(stderr, "send problem.\n");
+	bytes = read(connected_socket, input, BUFFER_SIZE);
+	if (bytes == -1 || bytes == 0) {
+		perror("read");
 		return;
 	}
 #ifdef DEBUG
 	fprintf(stderr, "input: \"%s\".\n", input);
 #endif				/* DEBUG */
 
-	/* Parse request. */
+	/* Parse (malicious) request. */
 	first_char = 4;
 	if (input[0] == 'G' && input[1] == 'E' && input[2] == 'T') {
 		while (input[first_char] == '/' || input[first_char] == '.'
@@ -203,109 +183,159 @@ http_server(void)
 
 #ifdef LOG
 	printf("%s HTTP/1.0\" ", parsed_name);
-#endif				/* DEBUG */
+#endif				/* LOG */
 
 	fp = fopen(parsed_name, "r");
 	if (fp == NULL) {
 		http_error(404);
 		return;
 	}
-	fseek(fp, 0, SEEK_END);
+
+	if (fseek(fp, 0, SEEK_END) == -1)
+		perror("fseek");
+
 	file_size = ftell(fp);
+	if (file_size == -1)
+		perror("ftell");
+
 	rewind(fp);
 
 	if (file_size > BUFFER_SIZE) {	/* malloc is expensive ;) */
-		temp_memory = malloc(file_size);
-		if (temp_memory == NULL) {
-			fprintf(stderr, "unable reserve tempoary memory, "
-				"memory requested: %d bytes.\n", file_size);
-			fclose(fp);
+		tmp_memory = malloc(file_size);
+		if (tmp_memory == NULL) {
+			perror("malloc");
+			if (fclose(fp) == EOF)
+				perror("fclose");
+			fp = NULL;
 			http_error(500);
 			return;
 		}
 	} else {
-		temp_memory = parsed_name;	/* Used as buffer */
+		tmp_memory = parsed_name;
 	}
 
 	write_socket("HTTP/1.0 200 OK\nServer: veppiserveri\nContent-type: ");
+
 	if (strstr(parsed_name, ".html") != NULL)
 		write_socket("text/html\n");
+
 	else if (strstr(parsed_name, ".gif") != NULL)
 		write_socket("image/gif\n");
+
 	else if (strstr(parsed_name, ".jp") != NULL)
 		write_socket("image/jpeg\n");
+
 	else if (strstr(parsed_name, ".png") != NULL)
 		write_socket("image/png\n");
+
 	else
 		write_socket("text/plain\n");
-	sprintf(parsed_name, "Content-length: %d\nConnection: close\n\n",
-		file_size);
-	write_socket(parsed_name);
 
-	fread(temp_memory, file_size, 1, fp);
-	data_got = write(server_socket, temp_memory, file_size);
-	if (data_got < 0)
-		fprintf(stderr, "write problem.\n");
+	sprintf(input, "Content-length: %d\nConnection: close\n\n", file_size);
+	write_socket(input);
+
+	fread(tmp_memory, file_size, 1, fp);
+
+	bytes = write(connected_socket, tmp_memory, file_size);
+	if (bytes == -1)
+		perror("write");
 
 	if (file_size > BUFFER_SIZE)
-		free(temp_memory);
+		free(tmp_memory);
 
-	fclose(fp);
+	if (fclose(fp) == EOF)
+		perror("fclose");
 
 #ifdef LOG
 	printf("200 %d \"-\" \"-\"\n", file_size);
 #endif				/* LOG */
 }
 
-void
-http_error(int error_code)
+int
+open_server_port(unsigned int port)
 {
-	const char error_header[] =
-	    "Server: veppiserveri\nContent-type: text/plain\n"
-	    "Connection: close\n\n\n";
-	const char not_found[] = "HTTP/1.0 404 Not found\n";
-	const char internal_server_error[] =
-	    "HTTP/1.0 500 Internal Server Error\n";
-	const char not_implemented[] = "HTTP/1.0 501 Not implemented\n";
+	static struct sockaddr_in sin;
+	int one = 1, sd;
 
-#ifdef LOG
-	printf("%d 1 \"-\" \"-\"\n", error_code);
-#endif				/* LOG */
-
-	switch (error_code) {
-	case 404:
-		write_socket(not_found);
-		write_socket(error_header);
-		write_socket(not_found);
-		break;
-
-	case 500:
-		write_socket(internal_server_error);
-		write_socket(error_header);
-		write_socket(internal_server_error);
-		break;
-
-	case 501:
-		write_socket(not_implemented);
-		write_socket(error_header);
-		write_socket(not_implemented);
-		break;
-
-	default:
-		fprintf(stderr, "Not defined error. error_code: %d\n",
-			error_code);
-		break;
+	if (port < 1 || port > 65535) {
+		return -1;
 	}
+
+	sin.sin_family = AF_INET;
+	sin.sin_port = htons(port);
+
+	sd = socket(AF_INET, SOCK_STREAM, 0);
+	if (sd == -1)
+		perror("socket");
+
+	if (setsockopt(sd, SOL_SOCKET, SO_REUSEADDR, (char *) &one,
+		       sizeof (int)) == -1)
+		perror("setsockopt");
+
+	if (bind(sd, (struct sockaddr *) &sin, sizeof (sin)) == -1) {
+		perror("bind");
+		if (close(sd) == -1)
+			perror("close");
+		return -1;
+	}
+
+	if (listen(sd, LISTEN_BACKLOG) == -1) {
+		perror("listen");
+		if (close(sd) == -1)
+			perror("close");
+		return -1;
+	}
+
+	return sd;
+}
+
+int
+parse_port(int argc, char *argv[])
+{
+	int port = -1;
+
+	if (argc > 1) {
+		if (argv[1][0] != '/') {
+			fprintf(stderr, "Given path is not absolute.\n");
+			return -1;
+		}
+
+		if (chdir("/") == -1 || chdir(argv[1]) == -1) {
+			perror("chdir");
+			return -1;
+		}
+
+		if (argc == 2)
+			port = DEFAULT_SERVER_PORT;
+
+		if (argc == 3)
+			port = atoi(argv[2]);
+
+		if (port < 1 || port > 65535) {
+			fprintf(stderr, "Port is between 1 and 65535.\n");
+			return -1;
+		}
+	} else {
+		fprintf(stderr,
+			"Usage: %s absolute-path-to-www-root [port]\n",
+			argv[0]);
+	}
+
+	return port;
+}
+
+void
+signal_handler(int sig)
+{
+	if (close(server_socket) == -1)
+		perror("close");
+	else
+		server_socket = -1;
 }
 
 void
 write_socket(const char *buffer)
 {
-	int code, length;
-
-	length = strlen(buffer);
-	code = write(server_socket, buffer, length);
-
-	if (code < 0)
-		fprintf(stderr, "write problem.\n");
+	if (write(connected_socket, buffer, strlen(buffer)) == -1)
+		perror("write");
 }
