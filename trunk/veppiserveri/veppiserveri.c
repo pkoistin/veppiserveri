@@ -1,5 +1,5 @@
 /* veppiserveri: Really tiny HTTP server.
- *
+
  * Quick & dirty code by Petri Koistinen (with stolen ideas. ;-)
  * Public Domain.
  *
@@ -20,8 +20,11 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
+#undef DEBUG
+#define LOG
+
 #define LISTEN_BACKLOG	10
-#define BUFFER_SIZE 2036 
+#define BUFFER_SIZE 8192
 
 static int server_socket;
 static int the_socket;
@@ -34,10 +37,12 @@ void write_socket(const char *buffer);
 
 int main(int argc, char *argv[])
 {
-	struct sockaddr_in client_addr;
+#ifdef LOG
 	struct hostent *host;
+#endif				/* LOG */
+	struct sockaddr_in client_addr;
 	unsigned int sin_size = sizeof(struct sockaddr_in);
-	int port = 80; /* Default HTTP service port */
+	int port = 80;		/* Default HTTP service port */
 
 	if (argc > 1) {
 		chdir("/");
@@ -66,14 +71,18 @@ int main(int argc, char *argv[])
 
 	while (the_socket != 0) {
 		if ((server_socket = accept(the_socket, (struct sockaddr *)
-			&client_addr, &sin_size)) == -1) {
+					    &client_addr,
+					    &sin_size)) == -1) {
 			perror("accept");
 			continue;
 		}
+#ifdef LOG
 		host = gethostbyaddr((char *) &(client_addr.sin_addr),
-			sizeof(struct in_addr), AF_INET);
+				     sizeof(struct in_addr), AF_INET);
 		printf("got connection from %s (%s)\n", host->h_name,
-			inet_ntoa(client_addr.sin_addr));
+		       inet_ntoa(client_addr.sin_addr));
+#endif				/* LOG */
+
 		chdir(argv[1]);
 		http_server();
 		close(server_socket);
@@ -103,10 +112,12 @@ int open_server_port(unsigned short port)
 		perror("socket");
 		exit(1);
 	}
+
 	one = 1;
 	if (setsockopt(tmp_socket, SOL_SOCKET, SO_REUSEADDR, (char *) &one,
-		sizeof(int)) == -1)
-		 fprintf(stderr, "Error in setsockopt REUSEADDR");
+		       sizeof(int)) == -1) {
+		fprintf(stderr, "Error in setsockopt REUSEADDR");
+	}
 
 	err = bind(tmp_socket, (struct sockaddr *) &sin, sizeof(sin));
 	if (err) {
@@ -114,21 +125,21 @@ int open_server_port(unsigned short port)
 		perror("bind");
 		exit(1);
 	}
+
 	err = listen(tmp_socket, LISTEN_BACKLOG);
 	if (err) {
 		close(tmp_socket);
 		perror("listen");
 		exit(1);
 	}
+
 	return tmp_socket;
 }
 
 void http_server(void)
 {
-	char parsed_name[BUFFER_SIZE + 12] =
-	{0};
-	char input[BUFFER_SIZE] =
-	{0};
+	char parsed_name[BUFFER_SIZE + 12] = { 0 };
+	char input[BUFFER_SIZE] = { 0 };
 	char *temp_memory = NULL;
 	FILE *fp;
 	int data_got, first_char, file_size, i;
@@ -138,24 +149,26 @@ void http_server(void)
 		fprintf(stderr, "send problem.\n");
 		return;
 	}
+#ifdef DEBUG
 	fprintf(stderr, "input: \"%s\".\n", input);
+#endif				/* DEBUG */
 
 	/* Parse request. */
 	first_char = 4;
 	if (input[0] == 'G' && input[1] == 'E' && input[2] == 'T') {
-		while (input[first_char] == '/' || input[first_char] == '.' ||
-		       input[first_char] == ':') {
+		while (input[first_char] == '/' || input[first_char] == '.'
+		       || input[first_char] == ':') {
 			first_char++;
 			if (first_char == BUFFER_SIZE)
 				return;
 		}
 		for (i = first_char; i < BUFFER_SIZE; i++) {
 			if (input[i] == '.' && input[i + 1] == '.' &&
-			  ((input[i + 2] == '/' || input[i + 2] == ' ') ||
-			   (input[i] == ':')))
+			    ((input[i + 2] == '/' || input[i + 2] == ' ')
+			     || (input[i] == ':')))
 				continue;
-			if (input[i] != ' ' && input[i] != '\n' &&
-			    input[i] != '\r')
+			if (input[i] != ' ' && input[i] != '\n'
+			    && input[i] != '\r')
 				parsed_name[i - first_char] = input[i];
 			else
 				break;
@@ -168,14 +181,15 @@ void http_server(void)
 	if (((chdir(parsed_name) == 0) || (strlen(parsed_name) == 0)))
 		strcpy(parsed_name, "index.html");
 
+#ifdef DEBUG
 	fprintf(stderr, "parsed input: \"%s\".\n", parsed_name);
+#endif				/* DEBUG */
 
 	fp = fopen(parsed_name, "r");
 	if (fp == NULL) {
 		http_error(404);
 		return;
 	}
-
 	fseek(fp, 0, SEEK_END);
 	file_size = ftell(fp);
 	rewind(fp);
@@ -183,16 +197,19 @@ void http_server(void)
 	if (file_size > BUFFER_SIZE) {	/* malloc is expensive ;) */
 		temp_memory = malloc(file_size);
 		if (temp_memory == NULL) {
-			fprintf(stderr,"unable reserve tempoary memory, "
-				"memory requested: %d bytes.\n", file_size);
+			fprintf(stderr, "unable reserve tempoary memory, "
+				"memory requested: %d bytes.\n",
+				file_size);
 			fclose(fp);
 			http_error(500);
 			return;
 		}
-	} else
+	} else {
 		temp_memory = parsed_name;	/* Used as buffer */
+	}
 
-	write_socket("HTTP/1.0 200 OK\nServer: veppiserveri\nContent-type: ");
+	write_socket
+	    ("HTTP/1.0 200 OK\nServer: veppiserveri\nContent-type: ");
 	if (strstr(parsed_name, ".html") != NULL)
 		write_socket("text/html\n");
 	else if (strstr(parsed_name, ".gif") != NULL)
@@ -204,7 +221,7 @@ void http_server(void)
 	else
 		write_socket("text/plain\n");
 	sprintf(parsed_name, "Content-length: %d\nConnection: close\n\n",
-		file_size);	
+		file_size);
 	write_socket(parsed_name);
 
 	fread(temp_memory, file_size, 1, fp);
@@ -221,14 +238,12 @@ void http_server(void)
 void http_error(int error_code)
 {
 	const char error_header[] =
-	"Server: veppiserveri\nContent-type: text/plain\n"
-	"Connection: close\n\n\n";
-	const char not_found[] =
-	"HTTP/1.0 404 Not found\n";
+	    "Server: veppiserveri\nContent-type: text/plain\n"
+	    "Connection: close\n\n\n";
+	const char not_found[] = "HTTP/1.0 404 Not found\n";
 	const char internal_server_error[] =
-	"HTTP/1.0 500 Internal Server Error\n";
-	const char not_implemented[] =
-	"HTTP/1.0 501 Not implemented\n";
+	    "HTTP/1.0 500 Internal Server Error\n";
+	const char not_implemented[] = "HTTP/1.0 501 Not implemented\n";
 
 	switch (error_code) {
 	case 404:
