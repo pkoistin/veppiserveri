@@ -23,8 +23,9 @@
 #undef DEBUG
 #define LOG
 
-#define LISTEN_BACKLOG	10
 #define BUFFER_SIZE 8192
+#define LISTEN_BACKLOG	21
+#define LOGBUFFER 9000
 
 static int server_socket;
 static int the_socket;
@@ -70,22 +71,30 @@ main(int argc, char *argv[])
 
 	the_socket = open_server_port(port);
 
+	setuid(99);		// Nobody on my Red Hat Rawhide Linux system.
+
 	while (the_socket != 0) {
+#ifdef LOG
+		char s[LOGBUFFER];
+		time_t tp;
+#endif				/* LOG */
 		if ((server_socket = accept(the_socket, (struct sockaddr *)
 					    &client_addr, &sin_size)) == -1) {
 			perror("accept");
 			continue;
 		}
 #ifdef LOG
+		time(&tp);
 		host = gethostbyaddr((char *) &(client_addr.sin_addr),
 				     sizeof (struct in_addr), AF_INET);
-		if (host == NULL) {
-			printf("got connection from unknown (%s)\n",
-			       inet_ntoa(client_addr.sin_addr));
+		if (host != NULL) {
+			printf("%s", host->h_name);
 		} else {
-			printf("got connection from %s (%s)\n", host->h_name,
-			       inet_ntoa(client_addr.sin_addr));
+			printf("%s", inet_ntoa(client_addr.sin_addr));
 		}
+		strftime(s, (size_t) LOGBUFFER,
+			 " - - [%d/%b/%Y:%X +%Z] \"GET /", localtime(&tp));
+		printf("%s", s);
 #endif				/* LOG */
 
 		chdir(argv[1]);
@@ -182,6 +191,9 @@ http_server(void)
 				break;
 		}
 	} else {
+#ifdef LOG
+		printf("\b\b\b\b\b(illegal request)\" ");
+#endif				/* LOG */
 		http_error(501);
 		return;
 	}
@@ -189,8 +201,8 @@ http_server(void)
 	if (((chdir(parsed_name) == 0) || (strlen(parsed_name) == 0)))
 		strcpy(parsed_name, "index.html");
 
-#ifdef DEBUG
-	fprintf(stderr, "parsed input: \"%s\".\n", parsed_name);
+#ifdef LOG
+	printf("%s HTTP/1.0\" ", parsed_name);
 #endif				/* DEBUG */
 
 	fp = fopen(parsed_name, "r");
@@ -239,6 +251,10 @@ http_server(void)
 		free(temp_memory);
 
 	fclose(fp);
+
+#ifdef LOG
+	printf("200 %d \"-\" \"-\"\n", file_size);
+#endif				/* LOG */
 }
 
 void
@@ -251,6 +267,10 @@ http_error(int error_code)
 	const char internal_server_error[] =
 	    "HTTP/1.0 500 Internal Server Error\n";
 	const char not_implemented[] = "HTTP/1.0 501 Not implemented\n";
+
+#ifdef LOG
+	printf("%d 1 \"-\" \"-\"\n", error_code);
+#endif				/* LOG */
 
 	switch (error_code) {
 	case 404:
