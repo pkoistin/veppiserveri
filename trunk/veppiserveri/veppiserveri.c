@@ -35,13 +35,14 @@ void http_server(void);
 void http_error(int error_code);
 void write_socket(const char *buffer);
 
-int main(int argc, char *argv[])
+int
+main(int argc, char *argv[])
 {
 #ifdef LOG
 	struct hostent *host;
 #endif				/* LOG */
 	struct sockaddr_in client_addr;
-	unsigned int sin_size = sizeof(struct sockaddr_in);
+	unsigned int sin_size = sizeof (struct sockaddr_in);
 	int port = 80;		/* Default HTTP service port */
 
 	if (argc > 1) {
@@ -71,16 +72,20 @@ int main(int argc, char *argv[])
 
 	while (the_socket != 0) {
 		if ((server_socket = accept(the_socket, (struct sockaddr *)
-					    &client_addr,
-					    &sin_size)) == -1) {
+					    &client_addr, &sin_size)) == -1) {
 			perror("accept");
 			continue;
 		}
 #ifdef LOG
 		host = gethostbyaddr((char *) &(client_addr.sin_addr),
-				     sizeof(struct in_addr), AF_INET);
-		printf("got connection from %s (%s)\n", host->h_name,
-		       inet_ntoa(client_addr.sin_addr));
+				     sizeof (struct in_addr), AF_INET);
+		if (host == NULL) {
+			printf("got connection from unknown (%s)\n",
+			       inet_ntoa(client_addr.sin_addr));
+		} else {
+			printf("got connection from %s (%s)\n", host->h_name,
+			       inet_ntoa(client_addr.sin_addr));
+		}
 #endif				/* LOG */
 
 		chdir(argv[1]);
@@ -92,14 +97,16 @@ int main(int argc, char *argv[])
 	return 0;
 }
 
-void signal_hander(int sig)
+void
+signal_hander(int sig)
 {
 	fprintf(stderr, "shutting down server...\n");
 	close(the_socket);
 	the_socket = 0;
 }
 
-int open_server_port(unsigned short port)
+int
+open_server_port(unsigned short port)
 {
 	static struct sockaddr_in sin;
 	int err, one, tmp_socket;
@@ -115,11 +122,11 @@ int open_server_port(unsigned short port)
 
 	one = 1;
 	if (setsockopt(tmp_socket, SOL_SOCKET, SO_REUSEADDR, (char *) &one,
-		       sizeof(int)) == -1) {
+		       sizeof (int)) == -1) {
 		fprintf(stderr, "Error in setsockopt REUSEADDR");
 	}
 
-	err = bind(tmp_socket, (struct sockaddr *) &sin, sizeof(sin));
+	err = bind(tmp_socket, (struct sockaddr *) &sin, sizeof (sin));
 	if (err) {
 		close(tmp_socket);
 		perror("bind");
@@ -136,7 +143,8 @@ int open_server_port(unsigned short port)
 	return tmp_socket;
 }
 
-void http_server(void)
+void
+http_server(void)
 {
 	char parsed_name[BUFFER_SIZE + 12] = { 0 };
 	char input[BUFFER_SIZE] = { 0 };
@@ -198,8 +206,7 @@ void http_server(void)
 		temp_memory = malloc(file_size);
 		if (temp_memory == NULL) {
 			fprintf(stderr, "unable reserve tempoary memory, "
-				"memory requested: %d bytes.\n",
-				file_size);
+				"memory requested: %d bytes.\n", file_size);
 			fclose(fp);
 			http_error(500);
 			return;
@@ -208,8 +215,7 @@ void http_server(void)
 		temp_memory = parsed_name;	/* Used as buffer */
 	}
 
-	write_socket
-	    ("HTTP/1.0 200 OK\nServer: veppiserveri\nContent-type: ");
+	write_socket("HTTP/1.0 200 OK\nServer: veppiserveri\nContent-type: ");
 	if (strstr(parsed_name, ".html") != NULL)
 		write_socket("text/html\n");
 	else if (strstr(parsed_name, ".gif") != NULL)
@@ -235,7 +241,8 @@ void http_server(void)
 	fclose(fp);
 }
 
-void http_error(int error_code)
+void
+http_error(int error_code)
 {
 	const char error_header[] =
 	    "Server: veppiserveri\nContent-type: text/plain\n"
@@ -271,7 +278,8 @@ void http_error(int error_code)
 	}
 }
 
-void write_socket(const char *buffer)
+void
+write_socket(const char *buffer)
 {
 	int code, length;
 
