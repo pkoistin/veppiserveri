@@ -76,7 +76,7 @@ main(int argc, char *argv[])
 			printf("%s", inet_ntoa(client_addr.sin_addr));
 		}
 		strftime(s, (size_t) LOGBUFFER,
-			 " - - [%d/%b/%Y:%X +%Z] \"GET /", localtime(&tp));
+			 " - - [%d/%b/%Y:%X +0000] \"GET /", gmtime(&tp));
 		printf("%s", s);
 #endif				/* LOG */
 
