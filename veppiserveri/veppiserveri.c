@@ -235,6 +235,10 @@ http_server(void)
 	write_socket(input);
 
 	fread(tmp_memory, file_size, 1, fp);
+	if (ferror(fp) != 0) {
+		perror("fread");
+		clearerr(fp);
+	}
 
 	bytes = write(connected_socket, tmp_memory, file_size);
 	if (bytes == -1)
@@ -257,9 +261,8 @@ open_server_port(unsigned int port)
 	static struct sockaddr_in sin;
 	int one = 1, sd;
 
-	if (port < 1 || port > 65535) {
+	if (port < 1 || port > 65535)
 		return -1;
-	}
 
 	sin.sin_family = AF_INET;
 	sin.sin_port = htons(port);
