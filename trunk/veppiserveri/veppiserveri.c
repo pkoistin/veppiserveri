@@ -5,7 +5,7 @@
  *
  * Feel free to send me comments: thoron(at)iki.fi
  *
- * URL: http://iki.fi/thoron/veppiserveri.c
+ * URL: http://veppiserveri.sourceforge.net/
  * $Id$
  */
 
