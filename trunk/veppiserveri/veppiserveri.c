@@ -36,7 +36,7 @@ int main(int argc, char *argv[])
 {
 	struct sockaddr_in client_addr;
 	struct hostent *host;
-	int sin_size = sizeof(struct sockaddr_in);
+	unsigned int sin_size = sizeof(struct sockaddr_in);
 	int port = 80; /* Default HTTP service port */
 
 	if (argc > 1) {
