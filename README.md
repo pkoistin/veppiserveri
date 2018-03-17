@@ -1,2 +1,2 @@
 # veppiserveri
-Really tiny HTTP server
+Really tiny HTTP server. Public Domain.
